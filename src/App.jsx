@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Navbar from "./components/Navbar";
 import Hero from "./components/Hero";
 import About from "./sections/About";
@@ -32,6 +32,7 @@ export default function App() {
         <Route path="/" element={<Portfolio />} />
         <Route path="/ponto" element={<PontoApp />} />
         <Route path="/pomodoro" element={<PomodoroApp />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
   );
