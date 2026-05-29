@@ -13,10 +13,15 @@
     <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Maurício Sarpa | Portfólio</title>
-    <script type="module" crossorigin src="/assets/main-DWP3UBLF.js"></script>
-    <link rel="modulepreload" crossorigin href="/assets/jsx-runtime-QQAaxwmN.js">
-    <link rel="stylesheet" crossorigin href="/assets/jsx-runtime-DExKAQBj.css">
-    <link rel="stylesheet" crossorigin href="/assets/main-Cf4oBfhG.css">
+    <script>
+      // Restaura o path que o 404.html codificou no query string
+      (function () {
+        var p = new URLSearchParams(window.location.search).get('p');
+        if (p) window.history.replaceState(null, '', decodeURIComponent(p));
+      })();
+    </script>
+    <script type="module" crossorigin src="/assets/index-DGt_wmVW.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-pEOmgAVQ.css">
   </head>
   <body>
     <div id="root"></div>

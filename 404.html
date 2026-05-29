@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <title>sarpa.dev</title>
+    <script>
+      // Redireciona para index.html preservando o path para o React Router
+      var l = window.location;
+      l.replace(
+        l.protocol + '//' + l.host + '/?p=' +
+        encodeURIComponent(l.pathname + l.search) + l.hash
+      );
+    </script>
+  </head>
+  <body></body>
+</html>
