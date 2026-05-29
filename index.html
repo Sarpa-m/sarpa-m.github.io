@@ -13,6 +13,13 @@
     <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Maurício Sarpa | Portfólio</title>
+    <script>
+      // Restaura o path que o 404.html codificou no query string
+      (function () {
+        var p = new URLSearchParams(window.location.search).get('p');
+        if (p) window.history.replaceState(null, '', decodeURIComponent(p));
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
