@@ -13,6 +13,7 @@ const DEFAULT_CONFIG = {
 
 const STORAGE_CONFIG   = 'pomodoro_config';
 const STORAGE_SESSIONS = 'pomodoro_sessions';
+const STORAGE_TIMER    = 'pomodoro_timer';
 
 const MODE_LABELS = { focus: 'Foco', shortBreak: 'Pausa Curta', longBreak: 'Pausa Longa' };
 const MODE_COLORS = { focus: '#818cf8', shortBreak: '#4ade80', longBreak: '#22d3ee' };
@@ -45,6 +46,62 @@ function persistSessions(count) {
   }));
 }
 
+function saveTimerState(mode, endTime, timeLeft, isRunning) {
+  localStorage.setItem(STORAGE_TIMER, JSON.stringify({ mode, endTime, timeLeft, isRunning }));
+}
+
+function clearTimerState() {
+  localStorage.removeItem(STORAGE_TIMER);
+}
+
+// Calcula o estado inicial levando em conta o que aconteceu com a página fechada.
+// Retorna { mode, timeLeft, isRunning, expiredMode, sessions }
+function resolveInitialState() {
+  const config   = loadConfig();
+  const sessions = loadSessions();
+
+  try {
+    const raw = localStorage.getItem(STORAGE_TIMER);
+    if (!raw) return null;
+
+    const { mode, endTime, timeLeft, isRunning } = JSON.parse(raw);
+
+    if (isRunning && endTime) {
+      const remaining = Math.round((endTime - Date.now()) / 1000);
+
+      if (remaining > 0) {
+        // Timer ainda rodando — retoma de onde parou
+        return { mode, timeLeft: remaining, isRunning: true, expiredMode: null, sessions };
+      }
+
+      // Timer expirou enquanto a página estava fechada
+      let newSessions = sessions;
+      let nextMode;
+      if (mode === 'focus') {
+        newSessions = sessions + 1;
+        persistSessions(newSessions);
+        nextMode = newSessions % config.sessionsUntilLong === 0 ? 'longBreak' : 'shortBreak';
+      } else {
+        nextMode = 'focus';
+      }
+      return {
+        mode: nextMode,
+        timeLeft: getModeSeconds(nextMode, config),
+        isRunning: false,
+        expiredMode: mode,   // para disparar o alarme ao montar
+        sessions: newSessions,
+      };
+    }
+
+    // Estava pausado — restaura como estava
+    if (mode && timeLeft) {
+      return { mode, timeLeft, isRunning: false, expiredMode: null, sessions };
+    }
+  } catch {}
+
+  return null;
+}
+
 // ── Audio ─────────────────────────────────────────────────────────────────────
 
 let audioCtx = null;
@@ -58,11 +115,7 @@ function ensureAudioCtx() {
 function playAlarmSound() {
   try {
     const ctx = ensureAudioCtx();
-    const melody = [
-      [880,  0.00], [1108, 0.25], [1319, 0.50],
-      [880,  0.85], [1108, 1.10], [1568, 1.35],
-    ];
-    melody.forEach(([freq, t]) => {
+    [[880, 0.00], [1108, 0.25], [1319, 0.50], [880, 0.85], [1108, 1.10], [1568, 1.35]].forEach(([freq, t]) => {
       const osc  = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.connect(gain);
@@ -109,21 +162,24 @@ function clampInt(val, min, max, fallback) {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function PomodoroApp() {
-  const [config,       setConfig]       = useState(loadConfig);
-  const [draftConfig,  setDraftConfig]  = useState(loadConfig);
-  const [mode,         setMode]         = useState('focus');
-  const [timeLeft,     setTimeLeft]     = useState(() => getModeSeconds('focus', loadConfig()));
-  const [isRunning,    setIsRunning]    = useState(false);
-  const [sessions,     setSessions]     = useState(loadSessions);
+  const config0  = loadConfig();
+  const saved    = resolveInitialState();
+
+  const [config,       setConfig]       = useState(config0);
+  const [draftConfig,  setDraftConfig]  = useState(config0);
+  const [mode,         setMode]         = useState(saved?.mode       ?? 'focus');
+  const [timeLeft,     setTimeLeft]     = useState(saved?.timeLeft   ?? getModeSeconds('focus', config0));
+  const [isRunning,    setIsRunning]    = useState(saved?.isRunning  ?? false);
+  const [sessions,     setSessions]     = useState(saved?.sessions   ?? loadSessions());
   const [showSettings, setShowSettings] = useState(false);
   const [alarmActive,  setAlarmActive]  = useState(false);
 
   // Refs to break stale-closure issues inside effects
-  const modeRef        = useRef(mode);
-  const configRef      = useRef(config);
-  const sessionsRef    = useRef(sessions);
-  const tickRef        = useRef({ startedAt: 0, startedWith: 0 });
-  const alarmTimerRef  = useRef(null);
+  const modeRef       = useRef(mode);
+  const configRef     = useRef(config);
+  const sessionsRef   = useRef(sessions);
+  const tickRef       = useRef({ startedAt: 0, startedWith: 0 });
+  const alarmTimerRef = useRef(null);
 
   useEffect(() => { modeRef.current     = mode;     }, [mode]);
   useEffect(() => { configRef.current   = config;   }, [config]);
@@ -140,13 +196,19 @@ export default function PomodoroApp() {
     setAlarmActive(true);
     playAlarmSound();
     alarmTimerRef.current = setInterval(playAlarmSound, 4000);
-
     if (finishedMode === 'focus') {
       notify('Pomodoro concluído! 🍅', `Sessão #${newSessionCount} completa. Hora de descansar!`);
     } else {
       notify('Pausa encerrada!', 'Hora de focar.');
     }
   }, []);
+
+  // Se o timer expirou com a página fechada, dispara alarme ao montar
+  useEffect(() => {
+    if (saved?.expiredMode) {
+      triggerAlarm(saved.expiredMode, saved.sessions);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Timer end ─────────────────────────────────────────────────────────────
 
@@ -169,17 +231,20 @@ export default function PomodoroApp() {
 
     triggerAlarm(currentMode, newSessions);
     setMode(nextMode);
-    setTimeLeft(getModeSeconds(nextMode, cfg));
+    const nextTimeLeft = getModeSeconds(nextMode, cfg);
+    setTimeLeft(nextTimeLeft);
     setIsRunning(false);
+    saveTimerState(nextMode, null, nextTimeLeft, false);
   }, [triggerAlarm]);
 
   // ── Tick ──────────────────────────────────────────────────────────────────
-  // Uses Date.now() so the timer stays accurate even when tab is throttled.
 
   useEffect(() => {
     if (!isRunning) return;
 
+    const endTime = Date.now() + timeLeft * 1000;
     tickRef.current = { startedAt: Date.now(), startedWith: timeLeft };
+    saveTimerState(modeRef.current, endTime, timeLeft, true);
 
     const id = setInterval(() => {
       const elapsed   = Math.floor((Date.now() - tickRef.current.startedAt) / 1000);
@@ -197,6 +262,13 @@ export default function PomodoroApp() {
     return () => clearInterval(id);
   }, [isRunning]); // intentionally omits timeLeft — captured via tickRef on start
 
+  // Salva estado ao pausar ou trocar de modo (para o caso de fechar a página)
+  useEffect(() => {
+    if (!isRunning) {
+      saveTimerState(mode, null, timeLeft, false);
+    }
+  }, [mode, timeLeft, isRunning]);
+
   // ── Notification permission ───────────────────────────────────────────────
 
   useEffect(() => {
@@ -208,24 +280,31 @@ export default function PomodoroApp() {
   // ── Actions ───────────────────────────────────────────────────────────────
 
   const start = () => {
-    ensureAudioCtx(); // unlock audio on user gesture
+    ensureAudioCtx();
     stopAlarm();
     setIsRunning(true);
   };
 
-  const pause = () => setIsRunning(false);
+  const pause = () => {
+    setIsRunning(false);
+    saveTimerState(mode, null, timeLeft, false);
+  };
 
   const reset = () => {
     stopAlarm();
     setIsRunning(false);
-    setTimeLeft(getModeSeconds(mode, config));
+    const t = getModeSeconds(mode, config);
+    setTimeLeft(t);
+    saveTimerState(mode, null, t, false);
   };
 
   const switchMode = (newMode) => {
     stopAlarm();
     setIsRunning(false);
     setMode(newMode);
-    setTimeLeft(getModeSeconds(newMode, config));
+    const t = getModeSeconds(newMode, config);
+    setTimeLeft(t);
+    saveTimerState(newMode, null, t, false);
   };
 
   const openSettings = () => {
@@ -245,19 +324,19 @@ export default function PomodoroApp() {
     localStorage.setItem(STORAGE_CONFIG, JSON.stringify(validated));
     setShowSettings(false);
     setIsRunning(false);
-    setTimeLeft(getModeSeconds(mode, validated));
+    const t = getModeSeconds(mode, validated);
+    setTimeLeft(t);
+    saveTimerState(mode, null, t, false);
   };
 
   // ── Ring SVG ──────────────────────────────────────────────────────────────
 
-  const RADIUS       = 110;
-  const STROKE       = 8;
-  const CIRCUMF      = 2 * Math.PI * RADIUS;
-  const totalSecs    = getModeSeconds(mode, config);
-  const remaining    = totalSecs > 0 ? timeLeft / totalSecs : 0; // 1→0 as time passes
-  const dashOffset   = CIRCUMF * (1 - remaining);               // 0→CIRCUMF
-
-  // ── Dots ─────────────────────────────────────────────────────────────────
+  const RADIUS     = 110;
+  const STROKE     = 8;
+  const CIRCUMF    = 2 * Math.PI * RADIUS;
+  const totalSecs  = getModeSeconds(mode, config);
+  const remaining  = totalSecs > 0 ? timeLeft / totalSecs : 0;
+  const dashOffset = CIRCUMF * (1 - remaining);
 
   const filledDots = sessions % config.sessionsUntilLong;
   const modeColor  = MODE_COLORS[mode];
@@ -265,7 +344,6 @@ export default function PomodoroApp() {
   return (
     <div className="p-app pm-app">
 
-      {/* Header */}
       <header className="p-header">
         <a href="/" className="p-back">← sarpa.dev</a>
         <div className="p-header-center">
@@ -281,7 +359,6 @@ export default function PomodoroApp() {
 
       <main className="p-main pm-main">
 
-        {/* Mode tabs */}
         <div className="pm-tabs">
           {Object.entries(MODE_LABELS).map(([key, label]) => (
             <button
@@ -295,14 +372,9 @@ export default function PomodoroApp() {
           ))}
         </div>
 
-        {/* Timer ring */}
         <div className="pm-ring-wrap" style={{ '--mode-color': modeColor }}>
           <svg className="pm-ring-svg" viewBox="0 0 260 260" aria-hidden="true">
-            <circle
-              cx="130" cy="130" r={RADIUS}
-              className="pm-ring-track"
-              strokeWidth={STROKE}
-            />
+            <circle cx="130" cy="130" r={RADIUS} className="pm-ring-track" strokeWidth={STROKE} />
             <circle
               cx="130" cy="130" r={RADIUS}
               className="pm-ring-fill"
@@ -318,7 +390,6 @@ export default function PomodoroApp() {
           </div>
         </div>
 
-        {/* Alarm banner */}
         {alarmActive && (
           <div className="pm-alarm" style={{ borderColor: modeColor }}>
             <span className="pm-alarm-msg">
@@ -328,7 +399,6 @@ export default function PomodoroApp() {
           </div>
         )}
 
-        {/* Controls */}
         <div className="pm-controls">
           {!isRunning ? (
             <button className="p-btn pm-btn-start" onClick={start} style={{ background: modeColor }}>
@@ -340,7 +410,6 @@ export default function PomodoroApp() {
           <button className="p-toggle pm-btn-reset" onClick={reset}>↺ Reiniciar</button>
         </div>
 
-        {/* Session dots */}
         <div className="pm-sessions">
           <div className="pm-dots">
             {Array.from({ length: config.sessionsUntilLong }).map((_, i) => (
@@ -353,65 +422,47 @@ export default function PomodoroApp() {
           </span>
         </div>
 
-        {/* Settings */}
         {showSettings && (
           <section className="p-card pm-settings">
             <h2 className="p-card-title">Configurações</h2>
-
             <div className="pm-settings-grid">
               <label className="pm-field">
                 <span>Foco</span>
                 <div className="pm-field-row">
-                  <input
-                    type="number" min="1" max="99"
-                    className="pm-num-input"
+                  <input type="number" min="1" max="99" className="pm-num-input"
                     value={draftConfig.focusMinutes}
-                    onChange={e => setDraftConfig(d => ({ ...d, focusMinutes: e.target.value }))}
-                  />
+                    onChange={e => setDraftConfig(d => ({ ...d, focusMinutes: e.target.value }))} />
                   <span className="pm-unit">min</span>
                 </div>
               </label>
-
               <label className="pm-field">
                 <span>Pausa curta</span>
                 <div className="pm-field-row">
-                  <input
-                    type="number" min="1" max="60"
-                    className="pm-num-input"
+                  <input type="number" min="1" max="60" className="pm-num-input"
                     value={draftConfig.shortBreakMinutes}
-                    onChange={e => setDraftConfig(d => ({ ...d, shortBreakMinutes: e.target.value }))}
-                  />
+                    onChange={e => setDraftConfig(d => ({ ...d, shortBreakMinutes: e.target.value }))} />
                   <span className="pm-unit">min</span>
                 </div>
               </label>
-
               <label className="pm-field">
                 <span>Pausa longa</span>
                 <div className="pm-field-row">
-                  <input
-                    type="number" min="1" max="60"
-                    className="pm-num-input"
+                  <input type="number" min="1" max="60" className="pm-num-input"
                     value={draftConfig.longBreakMinutes}
-                    onChange={e => setDraftConfig(d => ({ ...d, longBreakMinutes: e.target.value }))}
-                  />
+                    onChange={e => setDraftConfig(d => ({ ...d, longBreakMinutes: e.target.value }))} />
                   <span className="pm-unit">min</span>
                 </div>
               </label>
-
               <label className="pm-field">
                 <span>Sessões até pausa longa</span>
                 <div className="pm-field-row">
-                  <input
-                    type="number" min="1" max="10"
-                    className="pm-num-input"
+                  <input type="number" min="1" max="10" className="pm-num-input"
                     value={draftConfig.sessionsUntilLong}
-                    onChange={e => setDraftConfig(d => ({ ...d, sessionsUntilLong: e.target.value }))}
-                  />
+                    onChange={e => setDraftConfig(d => ({ ...d, sessionsUntilLong: e.target.value }))} />
                   <span className="pm-unit">x</span>
                 </div>
               </label>
             </div>
-
             <button className="p-btn pm-save-btn" onClick={saveSettings}>
               Salvar configurações
             </button>
