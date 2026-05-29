@@ -1,0 +1,15 @@
+{
+  "name": "sarpa.dev",
+  "short_name": "sarpa.dev",
+  "description": "Portfólio de Maurício Sarpa — Analista de Tecnologia.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "minimal-ui",
+  "background_color": "#060912",
+  "theme_color": "#060912",
+  "lang": "pt-BR",
+  "icons": [
+    { "src": "/icons/ponto-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/ponto-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
