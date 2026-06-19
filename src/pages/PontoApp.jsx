@@ -130,6 +130,22 @@ function calcDayBalance(punches) {
   return calcWorked(punches) - JOURNEY;
 }
 
+/** Saldo projetado se bater o ponto AGORA (só faz sentido estando trabalhando) */
+function calcProjectedBalance(punches, now) {
+  if (!punches.length || punches.length % 2 === 0) return null;
+  let total = 0;
+  // Pares já fechados
+  for (let i = 0; i + 1 < punches.length; i += 2) {
+    const diff = diffMinutes(parseHHMM(punches[i + 1]), parseHHMM(punches[i]));
+    if (diff > 0) total += diff;
+  }
+  // Sessão atual: do último punch até agora
+  const lastEntry = parseHHMM(punches[punches.length - 1]);
+  const currentDiff = diffMinutes(now, lastEntry);
+  if (currentDiff > 0) total += currentDiff;
+  return total - JOURNEY;
+}
+
 // ── Punch label ───────────────────────────────────────────────────────────────
 
 function punchLabel(index) {
@@ -225,8 +241,9 @@ export default function PontoApp() {
     inputTouched.current = false;
   };
 
-  const sugg    = calcSuggestions(punches);
-  const balance = calcBalance(punches);
+  const sugg             = calcSuggestions(punches);
+  const balance          = calcBalance(punches);
+  const projectedBalance = calcProjectedBalance(punches, now);
   const isWorking = punches.length % 2 === 1;
   const isDone    = punches.length >= 4 && punches.length % 2 === 0;
 
@@ -362,6 +379,12 @@ export default function PontoApp() {
                 <span>Restante</span>
                 <span>{sugg.remaining > 0 ? fmtWorked(sugg.remaining) : '—'}</span>
               </div>
+              {projectedBalance !== null && (
+                <div className={`p-calc-row p-calc-row--balance ${projectedBalance >= 0 ? 'pos' : 'neg'}`}>
+                  <span>Saldo projetado (agora)</span>
+                  <span>{fmtBalance(projectedBalance)}</span>
+                </div>
+              )}
               {sugg.exitSuggestion && (
                 <div className="p-calc-row p-calc-row--accent">
                   <span>Saída prevista (8h)</span>
