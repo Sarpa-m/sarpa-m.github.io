@@ -46,32 +46,59 @@ const fmtShortDate = (dateStr) => {
   });
 };
 
+/** Retorna { punches: string[], not_worked: boolean } */
 const loadDay = (date) => {
   const raw = localStorage.getItem(storageKey(date));
-  if (!raw) return [];
+  if (!raw) return { punches: [], not_worked: false };
   const parsed = JSON.parse(raw);
-  // Migra formato antigo (objeto) para array
-  if (Array.isArray(parsed)) return parsed;
+  // Novo formato: { punches, not_worked }
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'punches' in parsed) {
+    return { punches: parsed.punches || [], not_worked: !!parsed.not_worked };
+  }
+  // Migra formato antigo (array)
+  if (Array.isArray(parsed)) return { punches: parsed, not_worked: false };
+  // Migra formato legado (objeto com chaves nomeadas)
   if (typeof parsed === 'object' && parsed !== null) {
     const order = ['entrada', 'saidaIntervalo', 'retornoIntervalo', 'saida'];
-    return order.map(k => parsed[k]).filter(Boolean);
+    return { punches: order.map(k => parsed[k]).filter(Boolean), not_worked: false };
   }
-  return [];
+  return { punches: [], not_worked: false };
 };
 
-const saveDay  = (date, punches) =>
-  localStorage.setItem(storageKey(date), JSON.stringify(punches));
+const saveDay = (date, data) => {
+  const payload = Array.isArray(data) ? { punches: data, not_worked: false } : data;
+  localStorage.setItem(storageKey(date), JSON.stringify(payload));
+};
 
-const loadHistory = () => {
+const loadHistory = (days = 14) => {
   const hist = [];
-  for (let i = 1; i <= 14; i++) {
+  for (let i = 1; i <= days; i++) {
     const d = new Date();
     d.setDate(d.getDate() - i);
     const dateStr = d.toISOString().slice(0, 10);
     const data = loadDay(dateStr);
-    if (data.length) hist.push({ date: dateStr, punches: data });
+    if (data.punches.length || data.not_worked) hist.push({ date: dateStr, ...data });
   }
   return hist;
+};
+
+/** Carrega todos os dias salvos no localStorage (para saldo acumulado e export) */
+const loadAllDays = () => {
+  const days = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith('ponto_')) {
+      const dateStr = key.replace('ponto_', '');
+      if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+        const data = loadDay(dateStr);
+        if (data.punches.length || data.not_worked) {
+          days.push({ date: dateStr, ...data });
+        }
+      }
+    }
+  }
+  days.sort((a, b) => a.date.localeCompare(b.date)); // ordem cronológica
+  return days;
 };
 
 // ── Calculations ──────────────────────────────────────────────────────────────
@@ -125,9 +152,18 @@ function calcBalance(punches) {
   return calcWorked(punches) - JOURNEY;
 }
 
-function calcDayBalance(punches) {
+function calcDayBalance(punches, notWorked = false) {
+  if (notWorked) return -JOURNEY; // dia não trabalhado conta como -8h
   if (!punches.length || punches.length % 2 !== 0) return null;
   return calcWorked(punches) - JOURNEY;
+}
+
+/** Saldo acumulado de todos os dias salvos */
+function calcCumulativeBalance(allDays) {
+  return allDays.reduce((acc, d) => {
+    const bal = calcDayBalance(d.punches, d.not_worked);
+    return acc + (bal || 0);
+  }, 0);
 }
 
 /** Saldo projetado se bater o ponto AGORA (só faz sentido estando trabalhando) */
@@ -180,14 +216,26 @@ function Countdown({ targetHHMM }) {
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export default function PontoApp() {
+  const todayData = loadDay(getToday());
   const [today,       setToday]       = useState(getToday);
-  const [punches,     setPunches]     = useState(() => loadDay(getToday()));
+  const [punches,     setPunches]     = useState(todayData.punches);
+  const [notWorked,   setNotWorked]   = useState(todayData.not_worked);
   const [now,         setNow]         = useState(new Date());
   const [inputTime,   setInputTime]   = useState(() => toHHMM(new Date()));
-  const [history,     setHistory]     = useState(loadHistory);
+  const [history,     setHistory]     = useState(() => loadHistory(30));
+  const [allDays,     setAllDays]     = useState(loadAllDays);
   const [showHistory, setShowHistory] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const inputTouched = useRef(false);
+
+  // ── Edição de histórico ─────────────────────
+  const [editingDate,   setEditingDate]   = useState(null);
+  const [editPunches,   setEditPunches]   = useState([]);
+  const [editNotWorked, setEditNotWorked] = useState(false);
+
+  // ── Lançamento retroativo ──────────────────
+  const [showRetroPick, setShowRetroPick] = useState(false);
+  const [retroDate,     setRetroDate]     = useState('');
 
   // Clock tick
   useEffect(() => {
@@ -198,19 +246,29 @@ export default function PontoApp() {
       const newToday = n.toISOString().slice(0, 10);
       if (newToday !== today) {
         setToday(newToday);
-        setPunches(loadDay(newToday));
-        setHistory(loadHistory());
+        const data = loadDay(newToday);
+        setPunches(data.punches);
+        setNotWorked(data.not_worked);
+        setHistory(loadHistory(30));
+        setAllDays(loadAllDays());
         inputTouched.current = false;
       }
     }, 1000);
     return () => clearInterval(id);
   }, [today]);
 
-  const save = useCallback((next) => {
-    saveDay(today, next);
-    setPunches(next);
-    setHistory(loadHistory());
-  }, [today]);
+  const refreshAll = useCallback(() => {
+    setHistory(loadHistory(30));
+    setAllDays(loadAllDays());
+  }, []);
+
+  const save = useCallback((nextPunches, nextNotWorked) => {
+    const nw = nextNotWorked !== undefined ? nextNotWorked : notWorked;
+    saveDay(today, { punches: nextPunches, not_worked: nw });
+    setPunches(nextPunches);
+    setNotWorked(nw);
+    refreshAll();
+  }, [today, notWorked, refreshAll]);
 
   const addPunch = useCallback(() => {
     if (!inputTime) return;
@@ -229,12 +287,114 @@ export default function PontoApp() {
     save(punches.filter((_, idx) => idx !== i));
   }, [punches, save]);
 
+  const toggleNotWorked = useCallback(() => {
+    save(punches, !notWorked);
+  }, [punches, notWorked, save]);
+
   const resetDay = useCallback(() => {
-    save([]);
+    save([], false);
     setConfirmReset(false);
     inputTouched.current = false;
     setInputTime(toHHMM(new Date()));
   }, [save]);
+
+  // ── Edição de histórico ─────────────────────
+  const startEditHistory = useCallback((dateStr, dayPunches, dayNotWorked) => {
+    setEditingDate(dateStr);
+    setEditPunches([...dayPunches]);
+    setEditNotWorked(dayNotWorked);
+  }, []);
+
+  const cancelEditHistory = useCallback(() => {
+    setEditingDate(null);
+    setEditPunches([]);
+    setEditNotWorked(false);
+  }, []);
+
+  const addEditPunch = useCallback(() => {
+    setEditPunches(prev => [...prev, toHHMM(new Date())]);
+  }, []);
+
+  const editEditPunch = useCallback((i, val) => {
+    setEditPunches(prev => { const n = [...prev]; n[i] = val; return n; });
+  }, []);
+
+  const removeEditPunch = useCallback((i) => {
+    setEditPunches(prev => prev.filter((_, idx) => idx !== i));
+  }, []);
+
+  const saveHistoryEdit = useCallback(() => {
+    if (!editingDate) return;
+    saveDay(editingDate, { punches: editPunches, not_worked: editNotWorked });
+    cancelEditHistory();
+    refreshAll();
+  }, [editingDate, editPunches, editNotWorked, cancelEditHistory, refreshAll]);
+
+  // ── Lançamento retroativo ──────────────────
+  const openRetroactive = useCallback(() => {
+    // Abre o editor para uma data passada (nova ou existente)
+    if (!retroDate) return;
+    const existing = loadDay(retroDate);
+    setEditingDate(retroDate);
+    setEditPunches([...existing.punches]);
+    setEditNotWorked(existing.not_worked);
+    setShowRetroPick(false);
+    setRetroDate('');
+  }, [retroDate]);
+
+  // ── Export / Import ─────────────────────────
+  const exportData = useCallback(() => {
+    const all = loadAllDays();
+    const payload = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      days: Object.fromEntries(all.map(d => [d.date, { punches: d.punches, not_worked: d.not_worked }])),
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ponto-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, []);
+
+  const importData = useCallback(() => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (re) => {
+        try {
+          const data = JSON.parse(re.target.result);
+          if (!data.days || typeof data.days !== 'object') throw new Error('Formato inválido');
+          let imported = 0;
+          Object.entries(data.days).forEach(([dateStr, val]) => {
+            if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr) && val && Array.isArray(val.punches)) {
+              saveDay(dateStr, { punches: val.punches, not_worked: !!val.not_worked });
+              imported++;
+            }
+          });
+          alert(`${imported} dias importados com sucesso.`);
+          refreshAll();
+          // Se o dia de hoje foi importado, recarrega
+          const td = getToday();
+          const todayData = loadDay(td);
+          if (todayData.punches.length || todayData.not_worked) {
+            setPunches(todayData.punches);
+            setNotWorked(todayData.not_worked);
+          }
+        } catch (err) {
+          alert('Erro ao importar: ' + err.message);
+        }
+      };
+      reader.readAsText(file);
+    };
+    input.click();
+  }, [refreshAll]);
 
   const useNow = () => {
     setInputTime(toHHMM(new Date()));
@@ -327,15 +487,26 @@ export default function PontoApp() {
         </section>
 
         {/* ── Batidas ─────────────────────────── */}
-        {punches.length > 0 && (
-          <section className="p-card">
-            <div className="p-card-titlerow">
-              <h2 className="p-card-title">Batidas de hoje ({punches.length})</h2>
-              {!confirmReset ? (
+        <section className="p-card">
+          <div className="p-card-titlerow">
+            <h2 className="p-card-title">
+              {notWorked ? 'Dia não trabalhado' : punches.length > 0 ? `Batidas de hoje (${punches.length})` : 'Nenhuma batida'}
+            </h2>
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              <label className="p-notworked-toggle" style={{ marginRight: '0.25rem' }}>
+                <input
+                  type="checkbox"
+                  checked={notWorked}
+                  onChange={toggleNotWorked}
+                />
+                <span>Não trabalhei</span>
+              </label>
+              {punches.length > 0 && !confirmReset && (
                 <button className="p-danger-btn" onClick={() => setConfirmReset(true)}>
                   Resetar dia
                 </button>
-              ) : (
+              )}
+              {confirmReset && (
                 <span className="p-confirm-row">
                   Tem certeza?&nbsp;
                   <button className="p-danger-btn" onClick={resetDay}>Sim</button>
@@ -344,7 +515,9 @@ export default function PontoApp() {
                 </span>
               )}
             </div>
+          </div>
 
+          {!notWorked && punches.length > 0 && (
             <div className="p-punches-list">
               {punches.map((time, i) => (
                 <div key={i} className={`p-punch-row ${isEntry(i) ? 'p-punch-row--entry' : 'p-punch-row--exit'}`}>
@@ -363,13 +536,19 @@ export default function PontoApp() {
                 </div>
               ))}
             </div>
-          </section>
-        )}
+          )}
+
+          {notWorked && (
+            <p style={{ fontFamily: 'var(--font-mono)', fontSize: '0.78rem', color: 'var(--text-muted)', fontStyle: 'italic', textAlign: 'center', padding: '1rem 0' }}>
+              Dia marcado como não trabalhado (−8h na contagem)
+            </p>
+          )}
+        </section>
 
         {/* ── Resumo ──────────────────────────── */}
-        {sugg && (
-          <section className="p-card">
-            <h2 className="p-card-title">Resumo</h2>
+        <section className="p-card">
+          <h2 className="p-card-title">Resumo</h2>
+          {sugg ? (
             <div className="p-calcs">
               <div className="p-calc-row">
                 <span>Trabalhado</span>
@@ -398,38 +577,191 @@ export default function PontoApp() {
                 </div>
               )}
             </div>
-          </section>
-        )}
+          ) : notWorked ? (
+            <div className="p-calcs">
+              <div className="p-calc-row p-calc-row--balance neg">
+                <span>Saldo do dia</span>
+                <span>{fmtBalance(-JOURNEY)}</span>
+              </div>
+            </div>
+          ) : (
+            <p style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--text-muted)', textAlign: 'center', padding: '0.5rem 0' }}>
+              Registre sua entrada para ver o resumo
+            </p>
+          )}
+          {/* Saldo acumulado */}
+          {allDays.length > 0 && (() => {
+            const cumBal = calcCumulativeBalance(allDays);
+            return (
+              <div className="p-cumulative">
+                <span className="p-cumulative-label">Saldo acumulado ({allDays.length} dias)</span>
+                <span className={`p-cumulative-value ${cumBal >= 0 ? 'pos' : 'neg'}`}>
+                  {fmtBalance(cumBal)}
+                </span>
+              </div>
+            );
+          })()}
+        </section>
 
         {/* ── Histórico ───────────────────────── */}
-        {history.length > 0 && (
-          <section className="p-card">
-            <div className="p-card-titlerow">
-              <h2 className="p-card-title">Histórico</h2>
+        <section className="p-card">
+          <div className="p-card-titlerow">
+            <h2 className="p-card-title">Histórico</h2>
+            <div className="p-hist-actions">
+              <button className="p-toggle" onClick={exportData} title="Exportar todos os dados">
+                Exportar
+              </button>
+              <button className="p-toggle" onClick={importData} title="Importar backup">
+                Importar
+              </button>
               <button className="p-toggle" onClick={() => setShowHistory(v => !v)}>
                 {showHistory ? 'Ocultar' : `Ver ${history.length} dias`}
               </button>
             </div>
-            {showHistory && (
-              <div className="p-history">
-                {history.map(({ date, punches: dp }) => {
-                  const bal = calcDayBalance(dp);
+          </div>
+
+          {/* ── Lançamento retroativo ────────── */}
+          <div className="p-retro-bar">
+            {!showRetroPick ? (
+              <button className="p-toggle" onClick={() => setShowRetroPick(true)}>
+                + Lançamento retroativo
+              </button>
+            ) : (
+              <span className="p-retro-picker">
+                <input
+                  type="date"
+                  className="p-time-input p-time-input--sm"
+                  value={retroDate}
+                  max={today}
+                  onChange={(e) => setRetroDate(e.target.value)}
+                />
+                <button className="p-btn p-btn--sm" onClick={openRetroactive} disabled={!retroDate}>
+                  Criar / Editar
+                </button>
+                <button className="p-toggle" onClick={() => { setShowRetroPick(false); setRetroDate(''); }}>
+                  Cancelar
+                </button>
+              </span>
+            )}
+          </div>
+
+          {showHistory && (
+            <div className="p-history">
+              {/* Se está editando uma data que não está no histórico (retroativo novo) */}
+              {editingDate && !history.some(h => h.date === editingDate) && (
+                <div key={editingDate} className="p-hist-edit">
+                  <div className="p-hist-edit-header">
+                    <span className="p-hist-date">{fmtShortDate(editingDate)}</span>
+                    <label className="p-notworked-toggle">
+                      <input
+                        type="checkbox"
+                        checked={editNotWorked}
+                        onChange={(e) => setEditNotWorked(e.target.checked)}
+                      />
+                      <span>Não trabalhei</span>
+                    </label>
+                  </div>
+                  {!editNotWorked && (
+                    <div className="p-punches-list p-hist-edit-punches">
+                      {editPunches.map((time, i) => (
+                        <div key={i} className={`p-punch-row ${isEntry(i) ? 'p-punch-row--entry' : 'p-punch-row--exit'}`}>
+                          <span className="p-punch-row-label">{punchLabel(i)}</span>
+                          <input
+                            type="time"
+                            className="p-time-input p-time-input--sm"
+                            value={time}
+                            onChange={(e) => editEditPunch(i, e.target.value)}
+                          />
+                          <button
+                            className="p-remove-btn"
+                            onClick={() => removeEditPunch(i)}
+                            title="Remover batida"
+                          >×</button>
+                        </div>
+                      ))}
+                      <button className="p-add-punch-btn" onClick={addEditPunch}>
+                        + Adicionar batida
+                      </button>
+                    </div>
+                  )}
+                  <div className="p-hist-edit-actions">
+                    <button className="p-btn p-btn--sm" onClick={saveHistoryEdit}>Salvar</button>
+                    <button className="p-toggle" onClick={cancelEditHistory}>Cancelar</button>
+                  </div>
+                </div>
+              )}
+
+              {history.map(({ date, punches: dp, not_worked: nw }) => {
+                const isEditing = editingDate === date;
+                const bal = calcDayBalance(dp, nw);
+                const displayPunches = isEditing ? editPunches : dp;
+                const displayNotWorked = isEditing ? editNotWorked : nw;
+
+                if (isEditing) {
                   return (
-                    <div key={date} className="p-hist-row">
-                      <span className="p-hist-date">{fmtShortDate(date)}</span>
-                      <span className="p-hist-punches">{dp.join(' · ')}</span>
-                      {bal !== null && (
-                        <span className={`p-hist-balance ${bal >= 0 ? 'pos' : 'neg'}`}>
-                          {fmtBalance(bal)}
-                        </span>
+                    <div key={date} className="p-hist-edit">
+                      <div className="p-hist-edit-header">
+                        <span className="p-hist-date">{fmtShortDate(date)}</span>
+                        <label className="p-notworked-toggle">
+                          <input
+                            type="checkbox"
+                            checked={displayNotWorked}
+                            onChange={(e) => setEditNotWorked(e.target.checked)}
+                          />
+                          <span>Não trabalhei</span>
+                        </label>
+                      </div>
+                      {!displayNotWorked && (
+                        <div className="p-punches-list p-hist-edit-punches">
+                          {displayPunches.map((time, i) => (
+                            <div key={i} className={`p-punch-row ${isEntry(i) ? 'p-punch-row--entry' : 'p-punch-row--exit'}`}>
+                              <span className="p-punch-row-label">{punchLabel(i)}</span>
+                              <input
+                                type="time"
+                                className="p-time-input p-time-input--sm"
+                                value={time}
+                                onChange={(e) => editEditPunch(i, e.target.value)}
+                              />
+                              <button
+                                className="p-remove-btn"
+                                onClick={() => removeEditPunch(i)}
+                                title="Remover batida"
+                              >×</button>
+                            </div>
+                          ))}
+                          <button className="p-add-punch-btn" onClick={addEditPunch}>
+                            + Adicionar batida
+                          </button>
+                        </div>
                       )}
+                      <div className="p-hist-edit-actions">
+                        <button className="p-btn p-btn--sm" onClick={saveHistoryEdit}>Salvar</button>
+                        <button className="p-toggle" onClick={cancelEditHistory}>Cancelar</button>
+                      </div>
                     </div>
                   );
-                })}
-              </div>
-            )}
-          </section>
-        )}
+                }
+
+                return (
+                  <div key={date} className={`p-hist-row ${nw ? 'p-hist-row--notworked' : ''}`}>
+                    <span className="p-hist-date">{fmtShortDate(date)}</span>
+                    <span className="p-hist-punches">
+                      {nw ? '— Não trabalhado —' : (dp.length ? dp.join(' · ') : '—')}
+                    </span>
+                    <span className={`p-hist-balance ${bal !== null && bal >= 0 ? 'pos' : 'neg'}`}>
+                      {bal !== null ? fmtBalance(bal) : '—'}
+                    </span>
+                    <button
+                      className="p-edit-btn"
+                      onClick={() => startEditHistory(date, dp, nw)}
+                      title="Editar dia"
+                    >✎</button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
 
       </main>
     </div>
