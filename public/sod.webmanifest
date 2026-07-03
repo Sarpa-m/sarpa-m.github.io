@@ -1,0 +1,17 @@
+{
+  "name": "Gerador de Tabela — SoD",
+  "short_name": "SoD Tabela",
+  "description": "Importe CSV, filtre com campos em cascata e monte tabelas personalizadas para exportar.",
+  "start_url": "/sod",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#060912",
+  "theme_color": "#22d3ee",
+  "orientation": "portrait",
+  "lang": "pt-BR",
+  "icons": [
+    { "src": "/icons/ponto-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/ponto-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icons/ponto.svg",     "sizes": "any",      "type": "image/svg+xml" }
+  ]
+}

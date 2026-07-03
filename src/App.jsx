@@ -7,6 +7,7 @@ import Experience from "./sections/Experience";
 import Contact from "./sections/Contact";
 import PontoApp from "./pages/PontoApp";
 import PomodoroApp from "./pages/PomodoroApp";
+import SodApp from "./pages/SodApp";
 import "./App.css";
 
 // Troca o <link rel="manifest"> e o theme-color conforme a rota atual,
@@ -14,6 +15,7 @@ import "./App.css";
 const MANIFESTS = {
   '/ponto':    { href: '/ponto.webmanifest',    themeColor: '#6366f1' },
   '/pomodoro': { href: '/pomodoro.webmanifest', themeColor: '#f87171' },
+  '/sod':      { href: '/sod.webmanifest',      themeColor: '#22d3ee' },
 };
 
 function ManifestSwitcher() {
@@ -69,6 +71,7 @@ export default function App() {
         <Route path="/" element={<Portfolio />} />
         <Route path="/ponto" element={<PontoApp />} />
         <Route path="/pomodoro" element={<PomodoroApp />} />
+        <Route path="/sod" element={<SodApp />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
